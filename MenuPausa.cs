@@ -10,10 +10,9 @@ public class MenuPausa : MonoBehaviour
 
     private bool juegoPausado = false;
 
-    // --- NUEVO: ESTO ARREGLA TU PROBLEMA ---
+   
     private void Start()
     {
-        // Aseguramos que al entrar al nivel el menú esté cerrado y el juego corriendo
         Reanudar();
     }
     // ---------------------------------------
@@ -63,4 +62,5 @@ public class MenuPausa : MonoBehaviour
         Time.timeScale = 1f; 
         SceneManager.LoadScene(0); 
     }
+
 }
