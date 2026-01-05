@@ -1,0 +1,268 @@
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+[RequireComponent(typeof(CharacterController))]
+[RequireComponent(typeof(AudioSource))]
+public class ControladorTerceraPersona : MonoBehaviour
+{
+    [Header("Referencias")]
+    public Transform camaraPrincipal;
+    private CharacterController _controller;
+    private Animator _animator;
+    private InputSystem_Actions _inputs;
+    private AudioSource _audioSource;
+    private SistemaEstamina _estaminaScript;
+
+    [Header("Sonidos de Pasos (Por Superficie)")]
+    public AudioClip[] pasosGenericos; 
+    public AudioClip[] pasosTierra;
+    public AudioClip[] pasosPiedra;
+    public AudioClip[] pasosMadera;
+    public AudioClip[] pasosMetal;
+
+    [Header("Otros Sonidos")]
+    public AudioClip sonidoSalto;
+    public AudioClip sonidoAterrizaje;
+
+    [Header("Ajustes de Movimiento")]
+    public float velocidadCaminar = 2.0f;
+    public float velocidadCorrer = 5.0f;
+    public float velocidadAgachado = 1.5f;
+    public float tiempoSuavizadoGiro = 0.1f;
+    private float _velocidadGiroRef;
+
+    [Header("Estamina y Salto")]
+    public float costoEstaminaCorrer = 30f;
+    public float costoEstaminaSalto = 20f;
+    public float alturaSalto = 1.2f;
+    public float gravedad = -17.0f; 
+    
+    [Header("Detección de Suelo")]
+    public Transform piesPosicion;
+    public float radioSuelo = 0.3f;
+    public LayerMask capaSuelo;
+    public float margenBajada = 0.8f; 
+
+    [Header("Estado del Juego")]
+    public bool sePuedeMover = true;
+
+    // Estado interno
+    private Vector2 _inputMovimiento;
+    private Vector3 _velocidadVertical;
+    private bool _estaEnSuelo;
+    private bool _esSprint;
+    private bool _esAgachado;
+    
+    // IDs Animación
+    private int _animIDVelocidad;
+    private int _animIDAgachado;
+    private int _animIDEnSuelo;
+    private int _animIDSaltar;
+
+    // Variables de Coyote Time
+    private float tiempoCoyote = 0.2f;
+    private float _contadorCoyote;
+    private float tiempoEntreSaltos = 0.5f;
+    private float _tiempoProximoSalto = 0f;
+
+    private void Awake()
+    {
+        _controller = GetComponent<CharacterController>();
+        _audioSource = GetComponent<AudioSource>();
+        _estaminaScript = GetComponent<SistemaEstamina>();
+        _inputs = new InputSystem_Actions();
+
+        _animator = GetComponentInChildren<Animator>(); 
+
+        if (camaraPrincipal == null && Camera.main != null) camaraPrincipal = Camera.main.transform;
+        
+        AsignarIDsAnimacion();
+    }
+
+    private void AsignarIDsAnimacion()
+    {
+        _animIDVelocidad = Animator.StringToHash("Velocidad");
+        _animIDAgachado = Animator.StringToHash("Agachado");
+        _animIDEnSuelo = Animator.StringToHash("EnSuelo");
+        _animIDSaltar = Animator.StringToHash("Saltar");
+    }
+
+    private void Start()
+    {
+        AlternarCursor(true);
+    }
+
+    private void OnEnable()
+    {
+        if (_inputs == null) _inputs = new InputSystem_Actions();
+        _inputs.Player.Enable();
+        _inputs.Player.Jump.performed += ctx => IntentarSaltar();
+        _inputs.Player.Sprint.performed += ctx => _esSprint = true;
+        _inputs.Player.Sprint.canceled += ctx => _esSprint = false;
+        _inputs.Player.Crouch.performed += ctx => AlternarAgachado();
+    }
+
+    private void OnDisable() { if (_inputs != null) _inputs.Player.Disable(); }
+
+    private void Update()
+    {
+        if (_animator == null) return;
+
+        if (!sePuedeMover)
+        {
+            AplicarGravedad();
+            _animator.SetFloat(_animIDVelocidad, 0f);
+            return;
+        }
+
+        LeerInput();
+        VerificarSuelo(); 
+        AplicarGravedad();
+        Moverse();
+    }
+
+    public void EjecutarPaso() => ReproducirSonidoSuperficie();
+
+    private void ReproducirSonidoSuperficie()
+    {
+        AudioClip clipAUsar = null;
+        if (Physics.Raycast(piesPosicion.position, Vector3.down, out RaycastHit hit, 1.2f, capaSuelo))
+        {
+            string etiqueta = hit.collider.tag;
+            switch (etiqueta)
+            {
+                case "Tierra": clipAUsar = ObtenerClipAleatorio(pasosTierra); break;
+                case "Piedra": clipAUsar = ObtenerClipAleatorio(pasosPiedra); break;
+                case "Madera": clipAUsar = ObtenerClipAleatorio(pasosMadera); break;
+                case "Metal":  clipAUsar = ObtenerClipAleatorio(pasosMetal); break;
+                default:       clipAUsar = ObtenerClipAleatorio(pasosGenericos); break;
+            }
+        }
+        
+        if (clipAUsar != null)
+        {
+            _audioSource.pitch = Random.Range(0.9f, 1.1f);
+            _audioSource.volume = Random.Range(0.8f, 1.0f);
+            _audioSource.PlayOneShot(clipAUsar);
+        }
+    }
+
+    private AudioClip ObtenerClipAleatorio(AudioClip[] lista)
+    {
+        if (lista == null || lista.Length == 0) return null;
+        return lista[Random.Range(0, lista.Length)];
+    }
+
+    private void LeerInput() => _inputMovimiento = _inputs.Player.Move.ReadValue<Vector2>();
+
+    private void VerificarSuelo()
+    {
+        bool estabaEnSueloAntes = _estaEnSuelo;
+        bool tocaEsfera = Physics.CheckSphere(piesPosicion.position, radioSuelo, capaSuelo);
+        bool tocaTunel = Physics.SphereCast(piesPosicion.position, radioSuelo * 0.9f, Vector3.down, out RaycastHit hit, margenBajada, capaSuelo);
+
+        _estaEnSuelo = tocaEsfera || tocaTunel;
+        _animator.SetBool(_animIDEnSuelo, _estaEnSuelo);
+
+        if (_estaEnSuelo)
+        {
+            _contadorCoyote = tiempoCoyote;
+            if (!estabaEnSueloAntes) _audioSource.PlayOneShot(sonidoAterrizaje);
+        }
+        else
+        {
+            _contadorCoyote -= Time.deltaTime;
+        }
+    }
+
+    private void Moverse()
+    {
+        bool intentaCorrer = _esSprint && _inputMovimiento.sqrMagnitude > 0.01f;
+        bool puedeCorrer = (_estaminaScript != null) ? _estaminaScript.UsarEstamina(costoEstaminaCorrer * Time.deltaTime) : true;
+        if (!intentaCorrer) puedeCorrer = false;
+
+        float velocidadObjetivo = _esAgachado ? velocidadAgachado : (puedeCorrer ? velocidadCorrer : velocidadCaminar);
+        Vector3 direction = new Vector3(_inputMovimiento.x, 0f, _inputMovimiento.y).normalized;
+
+        if (direction.magnitude >= 0.1f)
+        {
+            float targetAngle = Mathf.Atan2(direction.x, direction.z) * Mathf.Rad2Deg + camaraPrincipal.eulerAngles.y;
+            float angle = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetAngle, ref _velocidadGiroRef, tiempoSuavizadoGiro);
+            transform.rotation = Quaternion.Euler(0f, angle, 0f);
+
+            Vector3 moveDir = Quaternion.Euler(0f, targetAngle, 0f) * Vector3.forward;
+            _controller.Move(moveDir.normalized * velocidadObjetivo * Time.deltaTime);
+        }
+
+        float multiplicador = puedeCorrer ? 2f : 1f;
+        if (_esAgachado) multiplicador = 0.5f;
+        
+        float velocidadAnimacion = (_inputMovimiento.magnitude > 0.1f) ? multiplicador : 0f;
+        float valorActualAnimator = _animator.GetFloat(_animIDVelocidad);
+
+        if (velocidadAnimacion == 0f && valorActualAnimator < 0.05f)
+        {
+             _animator.SetFloat(_animIDVelocidad, 0f);
+        }
+        else
+        {
+             _animator.SetFloat(_animIDVelocidad, velocidadAnimacion, 0.1f, Time.deltaTime);
+        }
+    }
+
+    private void IntentarSaltar()
+    {
+        if (_contadorCoyote > 0f && Time.time >= _tiempoProximoSalto)
+        {
+            bool tieneEnergia = (_estaminaScript != null) ? _estaminaScript.UsarEstamina(costoEstaminaSalto) : true;
+            if (tieneEnergia)
+            {
+                // FIX 2: Usamos 'gravedad' en lugar de 'gravity'
+                _velocidadVertical.y = Mathf.Sqrt(alturaSalto * -2f * gravedad);
+                _animator.SetTrigger(_animIDSaltar);
+                _audioSource.PlayOneShot(sonidoSalto);
+                _tiempoProximoSalto = Time.time + tiempoEntreSaltos;
+                _contadorCoyote = 0f;
+            }
+        }
+    }
+
+    private void AlternarAgachado()
+    {
+        _esAgachado = !_esAgachado;
+        _controller.height = _esAgachado ? 1.0f : 1.8f;
+        _controller.center = _esAgachado ? new Vector3(0, 0.5f, 0) : new Vector3(0, 0.9f, 0);
+        _animator.SetBool(_animIDAgachado, _esAgachado);
+    }
+
+    private void AplicarGravedad()
+    {
+        if (_estaEnSuelo && _velocidadVertical.y < 0) _velocidadVertical.y = -5f;
+        _velocidadVertical.y += gravedad * Time.deltaTime;
+        _controller.Move(_velocidadVertical * Time.deltaTime);
+    }
+
+    public void BloquearControles(bool bloquear)
+    {
+        sePuedeMover = !bloquear;
+        if (bloquear) { _inputMovimiento = Vector2.zero; AlternarCursor(false); }
+        else { AlternarCursor(true); }
+    }
+
+    private void AlternarCursor(bool bloqueado)
+    {
+        Cursor.lockState = bloqueado ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = !bloqueado;
+    }
+
+    private void OnDrawGizmosSelected()
+    {
+        if (piesPosicion != null)
+        {
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(piesPosicion.position, radioSuelo);
+            Gizmos.color = Color.green;
+            Gizmos.DrawLine(piesPosicion.position, piesPosicion.position + (Vector3.down * margenBajada));
+        }
+    }
+}
