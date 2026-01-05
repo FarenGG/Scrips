@@ -5,7 +5,7 @@ public class MenuPrincipal : MonoBehaviour
 {
     private void Start()
     {
-        // IMPORTANTE: Al entrar al menú, liberamos el mouse para poder hacer clic
+        //  entrar al menú, liberamos el mouse para poder hacer clic
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
     }
@@ -21,4 +21,5 @@ public class MenuPrincipal : MonoBehaviour
         Debug.Log("Saliendo del juego...");
         Application.Quit();
     }
+
 }
